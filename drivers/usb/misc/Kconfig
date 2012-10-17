@@ -82,7 +82,7 @@ config USB_LCD
 config USB_LED
 	tristate "USB LED driver support"
 	help
-	  Say Y here if you want to connect an USBLED device to your 
+	  Say Y here if you want to connect an USBLED device to your
 	  computer's USB port.
 
 	  To compile this driver as a module, choose M here: the
@@ -107,7 +107,7 @@ config USB_CYTHERM
 	  Say Y here if you want to connect a Cypress USB thermometer
 	  device to your computer's USB port. This device is also known
 	  as the Cypress USB Starter kit or demo board. The Elektor
-	  magazine published a modified version of this device in issue 
+	  magazine published a modified version of this device in issue
 	  #291.
 
 	  To compile this driver as a module, choose M here: the
@@ -235,3 +235,18 @@ config USB_HSIC_USB3503
        depends on I2C
        help
          This option enables support for SMSC USB3503 HSIC to USB 2.0 Driver.
+
+config USB_EGPMS
+	tristate "USB Gembird Energenie PMS driver"
+	depends on USB
+	help
+	  Say Y here if you want to connect a Gembird Energenie PMS device.
+
+	  The driver supports enable/disable outlets, read/write of outlet
+	  schedules and reading the serial ID of the device. All functions are
+	  accessable via the device-specific entry in sysfs.
+
+	  See https://github.com/scosu/egpms_ctl for information about the sysfs
+	  files and a control program
+
+	  If you choose M, the driver will be called egpms.
