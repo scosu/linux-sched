@@ -139,10 +139,25 @@ print_task(struct seq_file *m, struct rq *rq, struct task_struct *p)
 	SEQ_printf(m, "\n");
 }
 
+static void print_latencies(struct seq_file *m, struct rq *rq)
+{
+	char buf[512] = "";
+	char *pos = buf;
+	unsigned int i = 0;
+	SEQ_printf(m, "\nmin_latency: %u\n", rq->min_latency);
+	for (i = 0; i != CFS_NR_LATENCIES; ++i) {
+		int written = sprintf(pos, "%u ", rq->latency_running[i]);
+		pos += written;
+	}
+	SEQ_printf(m, "latency_running: %s\n", buf);
+}
+
 static void print_rq(struct seq_file *m, struct rq *rq, int rq_cpu)
 {
 	struct task_struct *g, *p;
 	unsigned long flags;
+
+	print_latencies(m, rq);
 
 	SEQ_printf(m,
 	"\nrunnable tasks:\n"

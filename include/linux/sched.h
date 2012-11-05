@@ -1186,6 +1186,9 @@ struct sched_entity {
 	u64			vruntime;
 	u64			prev_sum_exec_runtime;
 
+	unsigned int		latency;
+	unsigned int		latency_incr_ct;
+
 	u64			nr_migrations;
 
 #ifdef CONFIG_SCHEDSTATS

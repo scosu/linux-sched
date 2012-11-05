@@ -46,6 +46,31 @@
 unsigned int sysctl_sched_latency = 6000000ULL;
 unsigned int normalized_sysctl_sched_latency = 6000000ULL;
 
+#define SCHED_NR_LATENCIES 14
+
+static u64 sched_latency[SCHED_NR_LATENCIES] = {
+		6000000ULL, 12000000ULL, 18000000ULL, 24000000ULL, 36000000ULL,
+		48000000ULL, 60000000ULL, 120000000ULL, 240000000ULL,
+		360000000ULL, 48000000ULL, 600000000ULL, 780000000ULL,
+		960000000ULL};
+
+/*
+ * Latency multiplayer array.
+ * sched_latency[i] = sched_latency_mult[i] * sysctl_sched_latency
+ */
+static const unsigned int sched_latency_mult[SCHED_NR_LATENCIES] = {
+		1, 2, 3, 4, 6, 8,
+		10, 20, 40, 60,
+		80, 100, 130, 160};
+
+/*
+ * is kept at sched_latency[i] / sysctl_sched_min_granularity
+ */
+static unsigned int sched_nr_latency[SCHED_NR_LATENCIES] = {
+		8, 16, 24, 32, 48, 64, 80, 160, 320, 480, 640, 800, 1040, 1280};
+
+#define SCHED_LATENCY_INCR 5
+
 /*
  * The initial- and re-scaling of tunables is configurable
  * (default SCHED_TUNABLESCALING_LOG = *(1+ilog(ncpus))
@@ -64,11 +89,6 @@ enum sched_tunable_scaling sysctl_sched_tunable_scaling
  */
 unsigned int sysctl_sched_min_granularity = 750000ULL;
 unsigned int normalized_sysctl_sched_min_granularity = 750000ULL;
-
-/*
- * is kept at sysctl_sched_latency / sysctl_sched_min_granularity
- */
-static unsigned int sched_nr_latency = 8;
 
 /*
  * After fork, child runs first. If set to 0 (default) then
@@ -472,6 +492,26 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 #endif
 }
 
+static void update_task_latency(struct rq *rq, struct sched_entity *se)
+{
+	unsigned int latency;
+
+	if (--se->latency_incr_ct || se->latency == SCHED_NR_LATENCIES - 1)
+		return;
+
+	latency = se->latency;
+	se->latency_incr_ct = SCHED_LATENCY_INCR;
+	--rq->latency_running[latency];
+	if (rq->latency_running[latency] == 0
+			&& rq->min_latency == latency
+			&& rq->min_latency != SCHED_NR_LATENCIES - 1) {
+		++rq->min_latency;
+	}
+	++latency;
+	se->latency = latency;
+	++rq->latency_running[latency];
+}
+
 /*
  * Enqueue an entity into the rb-tree:
  */
@@ -564,12 +604,17 @@ int sched_proc_update_handler(struct ctl_table *table, int write,
 {
 	int ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 	int factor = get_update_sysctl_factor();
+	unsigned int i;
 
 	if (ret || !write)
 		return ret;
 
-	sched_nr_latency = DIV_ROUND_UP(sysctl_sched_latency,
+	for (i = SCHED_NR_LATENCIES; i--; ) {
+		sched_latency[i] = sysctl_sched_latency
+					* sched_latency_mult[i];
+		sched_nr_latency[i] = DIV_ROUND_UP(sched_latency[i],
 					sysctl_sched_min_granularity);
+	}
 
 #define WRT_SYSCTL(name) \
 	(normalized_sysctl_##name = sysctl_##name / (factor))
@@ -602,10 +647,11 @@ calc_delta_fair(unsigned long delta, struct sched_entity *se)
  *
  * p = (nr <= nl) ? l : l*nr/nl
  */
-static u64 __sched_period(unsigned long nr_running)
+static u64 __sched_period(struct rq *rq, unsigned long nr_running)
 {
-	u64 period = sysctl_sched_latency;
-	unsigned long nr_latency = sched_nr_latency;
+	unsigned int min_lat = rq->min_latency;
+	u64 period = sched_latency[min_lat];
+	unsigned long nr_latency = sched_nr_latency[min_lat];
 
 	if (unlikely(nr_running > nr_latency)) {
 		period = sysctl_sched_min_granularity;
@@ -623,7 +669,8 @@ static u64 __sched_period(unsigned long nr_running)
  */
 static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
-	u64 slice = __sched_period(cfs_rq->nr_running + !se->on_rq);
+	u64 slice = __sched_period(rq_of(cfs_rq), cfs_rq->nr_running + !se->on_rq)
+			* sched_latency_mult[se->latency];
 
 	for_each_sched_entity(se) {
 		struct load_weight *load;
@@ -640,6 +687,7 @@ static u64 sched_slice(struct cfs_rq *cfs_rq, struct sched_entity *se)
 		}
 		slice = calc_delta_mine(slice, se->load.weight, load);
 	}
+	slice = min(sched_latency[rq_of(cfs_rq)->min_latency], slice);
 	return slice;
 }
 
@@ -2156,7 +2204,8 @@ static void hrtick_update(struct rq *rq)
 	if (!hrtick_enabled(rq) || curr->sched_class != &fair_sched_class)
 		return;
 
-	if (cfs_rq_of(&curr->se)->nr_running < sched_nr_latency)
+	if (cfs_rq_of(&curr->se)->nr_running
+			< sched_nr_latency[rq->min_latency])
 		hrtick_start_fair(rq, curr);
 }
 #else /* !CONFIG_SCHED_HRTICK */
@@ -2180,6 +2229,11 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 {
 	struct cfs_rq *cfs_rq;
 	struct sched_entity *se = &p->se;
+
+	se->latency = 0;
+	se->latency_incr_ct = SCHED_LATENCY_INCR;
+	rq->min_latency = 0;
+	++rq->latency_running[0];
 
 	for_each_sched_entity(se) {
 		if (se->on_rq)
@@ -2228,6 +2282,7 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	struct cfs_rq *cfs_rq;
 	struct sched_entity *se = &p->se;
 	int task_sleep = flags & DEQUEUE_SLEEP;
+	unsigned int latency = se->latency;
 
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
@@ -2272,6 +2327,18 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 
 	if (!se)
 		dec_nr_running(rq);
+
+	--rq->latency_running[latency];
+	if (latency == rq->min_latency
+			&& !rq->latency_running[latency]) {
+		unsigned int i;
+		for (i = latency; i != SCHED_NR_LATENCIES; ++i) {
+			if (rq->latency_running[i]) {
+				rq->min_latency = i;
+				break;
+			}
+		}
+	}
 	hrtick_update(rq);
 }
 
@@ -2893,7 +2960,7 @@ static void check_preempt_wakeup(struct rq *rq, struct task_struct *p, int wake_
 	struct task_struct *curr = rq->curr;
 	struct sched_entity *se = &curr->se, *pse = &p->se;
 	struct cfs_rq *cfs_rq = task_cfs_rq(curr);
-	int scale = cfs_rq->nr_running >= sched_nr_latency;
+	int scale = cfs_rq->nr_running >= sched_nr_latency[rq->min_latency];
 	int next_buddy_marked = 0;
 
 	if (unlikely(se == pse))
@@ -3000,6 +3067,8 @@ static void put_prev_task_fair(struct rq *rq, struct task_struct *prev)
 {
 	struct sched_entity *se = &prev->se;
 	struct cfs_rq *cfs_rq;
+	if (se->on_rq)
+		update_task_latency(rq, se);
 
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
@@ -3629,7 +3698,7 @@ void update_group_power(struct sched_domain *sd, int cpu)
 		/*
 		 * !SD_OVERLAP domains can assume that child groups
 		 * span the current group.
-		 */ 
+		 */
 
 		group = child->groups;
 		do {

@@ -7278,6 +7278,10 @@ void __init sched_init(void)
 
 		rq = cpu_rq(i);
 		raw_spin_lock_init(&rq->lock);
+		rq->min_latency = 0;
+		for (j = 0; j != CFS_NR_LATENCIES; ++j)
+			rq->latency_running[j] = 0;
+
 		rq->nr_running = 0;
 		rq->calc_load_active = 0;
 		rq->calc_load_update = jiffies + LOAD_FREQ;
