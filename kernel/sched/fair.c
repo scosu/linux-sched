@@ -46,8 +46,6 @@
 unsigned int sysctl_sched_latency = 6000000ULL;
 unsigned int normalized_sysctl_sched_latency = 6000000ULL;
 
-#define SCHED_NR_LATENCIES 14
-
 static u64 sched_latency[SCHED_NR_LATENCIES] = {
 		6000000ULL, 12000000ULL, 18000000ULL, 24000000ULL, 36000000ULL,
 		48000000ULL, 60000000ULL, 120000000ULL, 240000000ULL,
@@ -495,16 +493,18 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 static void update_task_latency(struct rq *rq, struct sched_entity *se)
 {
 	unsigned int latency;
+	unsigned int latency_running;
 
-	if (--se->latency_incr_ct || se->latency == SCHED_NR_LATENCIES - 1)
+	if (likely(--se->latency_incr_ct))
+		return
+	if (unlikely(se->latency == SCHED_NR_LATENCIES - 1))
 		return;
 
 	latency = se->latency;
 	se->latency_incr_ct = SCHED_LATENCY_INCR;
-	--rq->latency_running[latency];
-	if (rq->latency_running[latency] == 0
-			&& rq->min_latency == latency
-			&& rq->min_latency != SCHED_NR_LATENCIES - 1) {
+	latency_running = --rq->latency_running[latency];
+	if (latency_running == 0
+			&& rq->min_latency == latency) {
 		++rq->min_latency;
 	}
 	++latency;
@@ -2283,6 +2283,7 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	struct sched_entity *se = &p->se;
 	int task_sleep = flags & DEQUEUE_SLEEP;
 	unsigned int latency = se->latency;
+	unsigned int latency_running;
 
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
@@ -2328,9 +2329,8 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	if (!se)
 		dec_nr_running(rq);
 
-	--rq->latency_running[latency];
-	if (latency == rq->min_latency
-			&& !rq->latency_running[latency]) {
+	latency_running = --rq->latency_running[latency];
+	if (!latency_running && latency == rq->min_latency && rq->nr_running) {
 		unsigned int i;
 		for (i = latency; i != SCHED_NR_LATENCIES; ++i) {
 			if (rq->latency_running[i]) {
