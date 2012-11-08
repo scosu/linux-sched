@@ -198,7 +198,7 @@ struct cfs_bandwidth { };
 
 #endif	/* CONFIG_CGROUP_SCHED */
 
-#define CFS_NR_LATENCIES 14
+#define SCHED_NR_LATENCIES 14
 
 /* CFS-related fields in a runqueue */
 struct cfs_rq {
@@ -373,7 +373,7 @@ struct rq {
 	struct cfs_rq cfs;
 	struct rt_rq rt;
 
-	unsigned int latency_running[CFS_NR_LATENCIES];
+	unsigned int latency_running[SCHED_NR_LATENCIES];
 	unsigned int min_latency;
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
