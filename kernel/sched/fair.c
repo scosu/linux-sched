@@ -492,15 +492,14 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 
 static void update_task_latency(struct rq *rq, struct sched_entity *se)
 {
-	unsigned int latency;
+	unsigned int latency = se->latency;
 	unsigned int latency_running;
 
 	if (likely(--se->latency_incr_ct))
-		return
-	if (unlikely(se->latency == SCHED_NR_LATENCIES - 1))
+		return;
+	if (unlikely(latency == SCHED_NR_LATENCIES - 1))
 		return;
 
-	latency = se->latency;
 	se->latency_incr_ct = SCHED_LATENCY_INCR;
 	latency_running = --rq->latency_running[latency];
 	if (latency_running == 0
@@ -3110,6 +3109,9 @@ static void yield_task_fair(struct rq *rq)
 	}
 
 	set_skip_buddy(se);
+
+	/* Increase latency counter to make an update_task_latency without effect */
+	++se->latency_incr_ct;
 }
 
 static bool yield_to_task_fair(struct rq *rq, struct task_struct *p, bool preempt)
@@ -3124,6 +3126,9 @@ static bool yield_to_task_fair(struct rq *rq, struct task_struct *p, bool preemp
 	set_next_buddy(se);
 
 	yield_task_fair(rq);
+
+	/* Increase latency counter to make an update_task_latency without effect */
+	++se->latency_incr_ct;
 
 	return true;
 }

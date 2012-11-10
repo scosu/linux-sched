@@ -145,7 +145,7 @@ static void print_latencies(struct seq_file *m, struct rq *rq)
 	char *pos = buf;
 	unsigned int i = 0;
 	SEQ_printf(m, "\nmin_latency: %u\n", rq->min_latency);
-	for (i = 0; i != CFS_NR_LATENCIES; ++i) {
+	for (i = 0; i != SCHED_NR_LATENCIES; ++i) {
 		int written = sprintf(pos, "%u ", rq->latency_running[i]);
 		pos += written;
 	}
