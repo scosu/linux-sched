@@ -46,6 +46,10 @@
 unsigned int sysctl_sched_latency = 6000000ULL;
 unsigned int normalized_sysctl_sched_latency = 6000000ULL;
 
+/*
+ * Latencies in nanoseconds. Used to slowly increase the latency of long running
+ * tasks.
+ */
 static u64 sched_latency[SCHED_NR_LATENCIES] = {
 		6000000ULL, 12000000ULL, 18000000ULL, 24000000ULL, 36000000ULL,
 		48000000ULL, 60000000ULL, 120000000ULL, 240000000ULL,
@@ -490,8 +494,80 @@ static void update_min_vruntime(struct cfs_rq *cfs_rq)
 #endif
 }
 
-static void update_task_latency(struct rq *rq, struct sched_entity *se)
+static int check_latency_running(struct rq *rq)
 {
+	unsigned int ret = 0;
+	int status;
+	unsigned int i;
+	for (i = 0; i != SCHED_NR_LATENCIES; ++i) {
+		ret += rq->latency_running[i];
+	}
+	status = ret != rq->nr_running;
+	if (status) {
+		unsigned int j;
+		printk(KERN_ERR "running %u latrunning %u\n", rq->nr_running, ret);
+		printk(KERN_INFO "latency_running running %u min lat %u: ", rq->nr_running, rq->min_latency);
+		for (j = 0; j != SCHED_NR_LATENCIES; ++j) {
+			printk(KERN_CONT "%u ", rq->latency_running[j]);
+		}
+		printk(KERN_CONT "\n");
+	}
+	return status;
+}
+
+static void rq_increase_min_latency(struct rq *rq, unsigned int starting_at)
+{
+	unsigned int i;
+	for (i = starting_at;
+			i != SCHED_NR_LATENCIES - 1 && !rq->latency_running[i];
+			++i) ;
+	rq->min_latency = i;
+}
+
+static void rq_reduce_min_latency(struct rq *rq, unsigned int new_min)
+{
+	rq->min_latency = min(rq->min_latency, new_min);
+	BUG_ON(rq->min_latency == SCHED_NR_LATENCIES);
+}
+
+static void task_reduce_latency(struct rq *rq, struct task_struct *p,
+		unsigned int steps)
+{
+	struct sched_entity *se = &p->se;
+	unsigned int latency = se->latency;
+	unsigned int new_latency = latency - steps;
+
+	rq_reduce_min_latency(rq, new_latency);
+
+	--rq->latency_running[latency];
+	++rq->latency_running[new_latency];
+
+	se->latency = new_latency;
+}
+
+static void task_increase_latency(struct rq *rq, struct task_struct *p,
+		unsigned int steps)
+{
+	struct sched_entity *se = &p->se;
+	unsigned int latency = se->latency;
+	unsigned int new_latency = latency + steps;
+
+	--rq->latency_running[latency];
+	++rq->latency_running[new_latency];
+
+	if (rq->min_latency == latency)
+		rq_increase_min_latency(rq, latency);
+
+	se->latency = new_latency;
+}
+
+/*
+ * Update task latency if necessary. Normally a task latency is increased
+ * after SCHED_LATENCY_INCR calls of this function.
+ */
+static void task_update_latency(struct rq *rq, struct task_struct *p)
+{
+	struct sched_entity *se = &p->se;
 	unsigned int latency = se->latency;
 	unsigned int latency_running;
 
@@ -500,14 +576,21 @@ static void update_task_latency(struct rq *rq, struct sched_entity *se)
 	if (unlikely(latency == SCHED_NR_LATENCIES - 1))
 		return;
 
-	se->latency_incr_ct = SCHED_LATENCY_INCR;
 	latency_running = --rq->latency_running[latency];
+
+	/*
+	 * bypassing rq_increase_min_latency because we have more knowledge here
+	 */
 	if (latency_running == 0
 			&& rq->min_latency == latency) {
 		++rq->min_latency;
+		BUG_ON(rq->min_latency == SCHED_NR_LATENCIES);
 	}
+
 	++latency;
 	se->latency = latency;
+	se->latency_incr_ct = SCHED_LATENCY_INCR;
+
 	++rq->latency_running[latency];
 }
 
@@ -2229,10 +2312,16 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	struct cfs_rq *cfs_rq;
 	struct sched_entity *se = &p->se;
 
-	se->latency = 0;
+	unsigned int latency;
+	if (flags & (ENQUEUE_WAKEUP | ENQUEUE_WAKING)) {
+		latency = se->latency / 2;
+		se->latency = latency;
+	} else {
+		latency = se->latency;
+	}
 	se->latency_incr_ct = SCHED_LATENCY_INCR;
-	rq->min_latency = 0;
-	++rq->latency_running[0];
+	++rq->latency_running[latency];
+	rq_reduce_min_latency(rq, latency);
 
 	for_each_sched_entity(se) {
 		if (se->on_rq)
@@ -2282,7 +2371,6 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	struct sched_entity *se = &p->se;
 	int task_sleep = flags & DEQUEUE_SLEEP;
 	unsigned int latency = se->latency;
-	unsigned int latency_running;
 
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
@@ -2328,16 +2416,11 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	if (!se)
 		dec_nr_running(rq);
 
-	latency_running = --rq->latency_running[latency];
-	if (!latency_running && latency == rq->min_latency && rq->nr_running) {
-		unsigned int i;
-		for (i = latency; i != SCHED_NR_LATENCIES; ++i) {
-			if (rq->latency_running[i]) {
-				rq->min_latency = i;
-				break;
-			}
-		}
+	--rq->latency_running[latency];
+	if (unlikely(latency == rq->min_latency && rq->nr_running)) {
+		rq_increase_min_latency(rq, latency);
 	}
+
 	hrtick_update(rq);
 }
 
@@ -3067,7 +3150,7 @@ static void put_prev_task_fair(struct rq *rq, struct task_struct *prev)
 	struct sched_entity *se = &prev->se;
 	struct cfs_rq *cfs_rq;
 	if (se->on_rq)
-		update_task_latency(rq, se);
+		task_update_latency(rq, prev);
 
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
@@ -3110,8 +3193,11 @@ static void yield_task_fair(struct rq *rq)
 
 	set_skip_buddy(se);
 
-	/* Increase latency counter to make an update_task_latency without effect */
-	++se->latency_incr_ct;
+	/*
+	 * Assuming that schedyields are mainly used for busy waiting, we reduce
+	 * the task latency just by 1.
+	 */
+	task_reduce_latency(rq, curr, 1);
 }
 
 static bool yield_to_task_fair(struct rq *rq, struct task_struct *p, bool preempt)
@@ -3126,9 +3212,6 @@ static bool yield_to_task_fair(struct rq *rq, struct task_struct *p, bool preemp
 	set_next_buddy(se);
 
 	yield_task_fair(rq);
-
-	/* Increase latency counter to make an update_task_latency without effect */
-	++se->latency_incr_ct;
 
 	return true;
 }
