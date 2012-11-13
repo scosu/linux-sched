@@ -3197,7 +3197,8 @@ static void yield_task_fair(struct rq *rq)
 	 * Assuming that schedyields are mainly used for busy waiting, we reduce
 	 * the task latency just by 1.
 	 */
-	task_reduce_latency(rq, curr, 1);
+	if (curr->se.latency != 0)
+		task_reduce_latency(rq, curr, 1);
 }
 
 static bool yield_to_task_fair(struct rq *rq, struct task_struct *p, bool preempt)
